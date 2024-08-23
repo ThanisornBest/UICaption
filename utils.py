@@ -10,6 +10,8 @@ import requests
 from urllib.request import urlopen
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
+from joblib import Parallel, delayed
+from tqdm import tqdm
 
 import logging
 
@@ -63,6 +65,24 @@ def collect_web_urls(file_path):
     return list(urls)
 
 
+def process_web_url(web_url):
+    """
+    Function to process each web URL and extract relevant image data.
+    """
+    webpage_image_urls, webpage_image_alt_text, webpage_text_above, webpage_text_below, webpage_image_class_names = fetch_images(web_url)
+    time.sleep(1)  # To avoid overwhelming the server
+
+    # Store the results in a dictionary
+    result = {
+        'webpage_image_urls': webpage_image_urls,
+        'webpage_image_alt_text': webpage_image_alt_text,
+        'webpage_text_above': webpage_text_above,
+        'webpage_text_below': webpage_text_below,
+        'webpage_image_class_names': webpage_image_class_names
+    }
+
+    return result
+
 def extract_images(website_urls, folder_path):
     """
     This method goes over each url and extracts all the images and associated text and
@@ -71,15 +91,17 @@ def extract_images(website_urls, folder_path):
     2. img_url_to_captions_new.csv (image urls and corresponding alt text)
     3. img_url_to_text_above_new.csv (image urls and corresponding preceding text)
     4. img_url_to_text_below_new.csv (image urls and corresponding succeeding text)
-    5. image_url_to_image_class_names_new.csv (image-urls and the correspinding img tag class name)
+    5. image_url_to_image_class_names_new.csv (image-urls and the corresponding img tag class name)
     """
     if not os.path.exists(folder_path):
         os.mkdir(folder_path)
 
-    # scraping all web urls
     logging.info("Processing all web_urls.")
 
-    # Extract images from the website urls
+    # Use Parallel and delayed to parallelize the fetching process
+    results = Parallel(n_jobs=-1)(delayed(process_web_url)(web_url) for web_url in tqdm(website_urls))
+
+    # Initialize dictionaries and lists
     image_url_dict = {}
     image_urls = []
     image_alt_text = []
@@ -90,12 +112,16 @@ def extract_images(website_urls, folder_path):
     img_url_to_text_above = {}
     img_url_to_text_below = {}
     img_url_to_class_name = {}
-    web_url_cntr = 0
-    for web_url in tqdm(website_urls):
-        logging.info(f"Scraping : {web_url}")
-        webpage_image_urls, webpage_image_alt_text, webpage_text_above, webpage_text_below, webpage_image_class_names = fetch_images(web_url)
-        time.sleep(1)
-        # remove any duplicate images
+
+    # Process each result
+    for result in results:
+        webpage_image_urls = result['webpage_image_urls']
+        webpage_image_alt_text = result['webpage_image_alt_text']
+        webpage_text_above = result['webpage_text_above']
+        webpage_text_below = result['webpage_text_below']
+        webpage_image_class_names = result['webpage_image_class_names']
+
+        # Remove any duplicate images
         idx = 0
         for url in webpage_image_urls:
             if url in image_url_dict:
@@ -115,9 +141,7 @@ def extract_images(website_urls, folder_path):
                 img_url_to_text_above[url] = webpage_text_above[idx]
                 img_url_to_text_below[url] = webpage_text_below[idx]
                 idx += 1
-        web_url_cntr += 1
-        
-    
+
     # Dump all image_urls
     write_list(image_urls, os.path.join(folder_path, 'ui_images.p'))
 
@@ -129,6 +153,7 @@ def extract_images(website_urls, folder_path):
     write_dict(folder_path, img_url_to_class_name, 'ui_image_url_to_image_class_names.csv', ['Image_Url', 'Class_Name'])
 
 
+
 def fetch_images(website_url):
     """
     This method extracts the data on a web url and then extracts all images present on the
@@ -136,13 +161,19 @@ def fetch_images(website_url):
     and succeeding text inside a ul, l, p or div tag. We also apply the length filter on the
     text extracted, i.e. if the number of words is less than 3, we extract more preceding text.
     """
-    try:
-        response = requests.get(website_url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-    except Exception as e:
-        print(f"Website url: {website_url} was not retrieved.")
-        return [],[],[],[],[]
-    
+    try_count = 0
+    while True:
+        try:
+            response = requests.get(website_url, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            break
+        except Exception:
+            try_count += 1
+        if try_count > 5:
+            with open('error_log.txt', 'a') as error_log:
+                error_log.write(f"ERROR - Could not retrieve {website_url}\n")
+            return [],[],[],[],[]    
+        
     img_tags = soup.find_all('img', src=True, alt=True)
     
     urls = [img['src'] for img in img_tags]
@@ -211,6 +242,29 @@ def fetch_images(website_url):
     return image_urls, image_alt_text, text_above, text_below, img_class_names
 
 
+def process_images_in_parallel(image_urls, query_folder_path, img_url_to_img_id, writer):
+    """
+    This method processes image URLs in parallel and writes the results using the provided writer.
+    """
+    def process_image_url(image_url, query_folder_path, img_url_to_img_id):
+        """
+        Function to process a single image URL.
+        """
+        img_fname = ''
+        if image_url not in img_url_to_img_id:
+            img_fname = persist_image(query_folder_path, image_url)
+            if img_fname == '':
+                return None  # Skip if image could not be persisted
+            img_url_to_img_id[image_url] = img_fname
+        return {"Image_Url": image_url, "Image_Name": img_fname}
+    # Use Parallel and delayed to parallelize the processing of image URLs
+    results = Parallel(n_jobs=-1)(delayed(process_image_url)(image_url, query_folder_path, img_url_to_img_id) for image_url in tqdm(image_urls))
+
+    # Write the results to the CSV using the writer
+    for data in results:
+        if data is not None:  # Skip None results
+            writer.writerow(data)
+
 def download_images(image_urls, query_folder_path):
     """
     Traverses through the list of validated image urls and downloads each of them 
@@ -229,16 +283,7 @@ def download_images(image_urls, query_folder_path):
     print('Downloading all images now...')
     with open(done_image_urls_fname, 'w') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=["Image_Url", "Image_Name"], delimiter='\t')
-        idx = 0
-        for image_url in tqdm(image_urls):
-            img_fname = ''
-            if image_url not in img_url_to_img_id:
-                img_fname = persist_image(query_folder_path, image_url)
-                if img_fname == '':
-                    continue
-                img_url_to_img_id[image_url] = img_fname
-            data = {"Image_Url": image_url, "Image_Name": img_fname}
-            writer.writerow(data)
+        process_images_in_parallel(image_urls, query_folder_path, img_url_to_img_id, writer)
 
 def persist_image(folder_path:str, url:str):
     """

@@ -24,13 +24,13 @@ If you used this dataset please cite the following paper:
 Use the compiled list of support and how-to websites provided in `tech_urls.txt` to extract UI images and associated descriptions from the web. Save the output to a folder, e.g., `crawled_uidata`:
 
 ```
-python crawl_uidata.py -i tech_urls.txt -o crawled_uidata
+python crawl_uidata.py --i tech_urls.txt --o crawled_uidata
 ```
 This script will generate three files stored in the specified output folder: `ui_images.p` which contains URLs of the UI images, `ui_alt_texts.csv` which contains alt-text associated with each UI image, `ui_instructions_preceding.csv` and `ui_instructions_succeeding.csv` which contains texts appearing before and after the image occurence in the webpage respectively.
 
 Then download the UI images:
 ```
-python download_images.py -i crawled_uidata/ui_images.txt
+python download_images.py -i crawled_uidata/ui_images.p
 ```
 
 ### Generate image-text pairs
